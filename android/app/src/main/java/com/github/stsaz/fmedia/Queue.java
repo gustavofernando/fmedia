@@ -7,16 +7,28 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.Random;
 
+interface QueueNotify {
+	/**
+	 * Called when the queue is modififed.
+	 */
+	void on_change(int what);
+}
+
+class PList {
+	ArrayList<String> plist;
+	int curpos;
+	boolean modified;
+}
+
 class Queue {
 	private final String TAG = "Queue";
 	private Core core;
 	private Track track;
+	private ArrayList<QueueNotify> nfy;
 
-	private ArrayList<String> plist;
-	private int curpos;
-	private boolean modified;
-	private boolean random;
+	private PList pl;
 	boolean repeat;
+	private boolean random;
 	private boolean active;
 	private Random rnd;
 	private Handler mloop;
@@ -44,7 +56,9 @@ class Queue {
 				}
 			}
 		});
-		plist = new ArrayList<>();
+		pl = new PList();
+		pl.plist = new ArrayList<>();
+		nfy = new ArrayList<>();
 
 		mloop = new Handler(Looper.getMainLooper());
 
@@ -52,15 +66,32 @@ class Queue {
 	}
 
 	void close() {
-		if (modified)
+	}
+
+	void saveconf() {
+		if (pl.modified)
 			save(core.work_dir + "/list1.m3u8");
+	}
+
+	void nfy_add(QueueNotify qn) {
+		nfy.add(qn);
+	}
+
+	void nfy_rm(QueueNotify qn) {
+		nfy.remove(qn);
+	}
+
+	private void nfy_all() {
+		for (QueueNotify qn : nfy) {
+			qn.on_change(0);
+		}
 	}
 
 	/**
 	 * Play track at cursor
 	 */
 	void playcur() {
-		play(curpos);
+		play(pl.curpos);
 	}
 
 	/**
@@ -70,29 +101,30 @@ class Queue {
 		core.dbglog(TAG, "play: %d", index);
 		if (active)
 			track.stop();
-		if (index < 0 || index >= plist.size())
+
+		if (index < 0 || index >= pl.plist.size())
 			return;
 
-		curpos = index;
-		track.start(plist.get(index));
+		pl.curpos = index;
+		track.start(pl.plist.get(index));
 	}
 
 	/**
 	 * Play next track
 	 */
 	void next() {
-		int i = curpos + 1;
+		int i = pl.curpos + 1;
 		if (random) {
-			i = rnd.nextInt(plist.size());
+			i = rnd.nextInt(pl.plist.size());
 			if (i < 0)
 				i = -i;
-			if (i == curpos) {
-				i = curpos + 1;
-				if (i == plist.size())
+			if (i == pl.curpos) {
+				i = pl.curpos + 1;
+				if (i == pl.plist.size())
 					i = 0;
 			}
 		} else if (repeat) {
-			if (i == plist.size())
+			if (i == pl.plist.size())
 				i = 0;
 		}
 		play(i);
@@ -102,7 +134,7 @@ class Queue {
 	 * Play previous track
 	 */
 	void prev() {
-		play(curpos - 1);
+		play(pl.curpos - 1);
 	}
 
 	/**
@@ -119,7 +151,12 @@ class Queue {
 	}
 
 	String[] list() {
-		return plist.toArray(new String[0]);
+		return pl.plist.toArray(new String[0]);
+	}
+
+	void remove(int pos) {
+		core.dbglog(TAG, "remove: %d", pos);
+		pl.plist.remove(pos);
 	}
 
 	/**
@@ -127,8 +164,24 @@ class Queue {
 	 */
 	void clear() {
 		core.dbglog(TAG, "clear");
-		plist.clear();
-		modified = true;
+		pl.plist.clear();
+		pl.curpos = 0;
+		pl.modified = true;
+		nfy_all();
+	}
+
+	void clear_addmany(String[] urls) {
+		pl.plist.clear();
+		pl.curpos = 0;
+		addmany(urls);
+	}
+
+	void addmany(String[] urls) {
+		for (String s : urls) {
+			pl.plist.add(s);
+		}
+		pl.modified = true;
+		nfy_all();
 	}
 
 	/**
@@ -136,8 +189,9 @@ class Queue {
 	 */
 	void add(String url) {
 		core.dbglog(TAG, "add: %s", url);
-		plist.add(url);
-		modified = true;
+		pl.plist.add(url);
+		pl.modified = true;
+		nfy_all();
 	}
 
 	/**
@@ -145,12 +199,12 @@ class Queue {
 	 */
 	private void save(String fn) {
 		StringBuilder sb = new StringBuilder();
-		for (String s : plist) {
+		for (String s : pl.plist) {
 			sb.append(s);
 			sb.append('\n');
 		}
 		if (core.file_writeall(fn, sb.toString().getBytes(), Core.FILE_WRITE_SAFE))
-			core.dbglog(TAG, "saved %d items to %s", plist.size(), fn);
+			core.dbglog(TAG, "saved %d items to %s", pl.plist.size(), fn);
 	}
 
 	/**
@@ -162,17 +216,17 @@ class Queue {
 			return;
 
 		String bs = new String(b);
-		plist.clear();
+		pl.plist.clear();
 		Splitter spl = new Splitter();
 		while (true) {
 			String s = spl.next(bs, '\n', 0);
 			if (s == null)
 				break;
 			if (s.length() != 0)
-				plist.add(s);
+				pl.plist.add(s);
 		}
 
-		core.dbglog(TAG, "loaded %d items from %s", plist.size(), fn);
+		core.dbglog(TAG, "loaded %d items from %s", pl.plist.size(), fn);
 	}
 
 	/*
@@ -181,7 +235,7 @@ class Queue {
 	*/
 	String writeconf() {
 		StringBuilder s = new StringBuilder();
-		s.append(String.format("curpos %d\n", curpos));
+		s.append(String.format("curpos %d\n", pl.curpos));
 
 		int val = 0;
 		if (random)
@@ -191,29 +245,24 @@ class Queue {
 		return s.toString();
 	}
 
-	void readconf(String data) {
-		Splitter spl = new Splitter();
-		while (true) {
-			String ln = spl.next(data, '\n', 0);
-			if (ln == null)
-				break;
+	int readconf(String k, String v) {
+		if (k.equals("curpos")) {
+			pl.curpos = core.str_toint(v, 0);
+			return 0;
 
-			Splitter spl2 = new Splitter();
-			String k, v;
-			k = spl2.next(ln, ' ', 0);
-			v = spl2.next(ln, ' ', 0);
-			if (k == null || v == null)
-				continue;
-
-			// core.dbglog(TAG, "conf: %s=%s", k, v);
-			if (k.equals("curpos")) {
-				curpos = core.str_toint(v, 0);
-
-			} else if (k.equals("random")) {
-				int val = core.str_toint(v, 0);
-				if (val == 1)
-					random(true);
-			}
+		} else if (k.equals("random")) {
+			int val = core.str_toint(v, 0);
+			if (val == 1)
+				random(true);
+			return 0;
 		}
+		return 1;
+	}
+
+	/**
+	 * Get current track index
+	 */
+	int cur() {
+		return pl.curpos;
 	}
 }

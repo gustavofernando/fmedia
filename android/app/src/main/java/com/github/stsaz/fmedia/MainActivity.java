@@ -1,23 +1,30 @@
 package com.github.stsaz.fmedia;
 
 import androidx.annotation.NonNull;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.Toolbar;
 import androidx.core.app.ActivityCompat;
 
 import android.Manifest;
+import android.content.DialogInterface;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.text.Editable;
+import android.text.TextWatcher;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
+import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.ListView;
 import android.widget.SeekBar;
-import android.widget.Switch;
 import android.widget.TextView;
-import android.widget.Toast;
 import android.widget.ToggleButton;
 
 import java.io.File;
@@ -28,17 +35,22 @@ import java.util.Comparator;
 public class MainActivity extends AppCompatActivity {
 	private final String TAG = "UI";
 	Core core;
+	GUI gui;
+	Queue queue;
+	QueueNotify quenfy;
 	TrackCtl track;
 	int time_total;
 
 	// Explorer:
 	String root_path; // upmost filesystem path
-	String cur_path; // current path
 	String[] fns; // file names
 	boolean updir; // "UP" directory link is shown
 	int ndirs; // number of directories shown
 	int cur_view; // Explorer/Playlist view switch (0:Playlist)
-	ArrayList<String> pl; // temporary array for recursive directory contents
+	ArrayList<String> tmp_fns; // temporary array for recursive directory contents
+
+	int filter_strlen;
+	ArrayList<Integer> filtered_idx;
 
 	TextView lbl_name;
 	ImageButton bplay;
@@ -47,7 +59,7 @@ public class MainActivity extends AppCompatActivity {
 	SeekBar progs;
 	ToggleButton bexplorer;
 	ToggleButton bplist;
-	Switch brandom;
+	EditText tfilter;
 
 	enum Cmd {
 		PlayPause,
@@ -55,7 +67,6 @@ public class MainActivity extends AppCompatActivity {
 		Prev,
 		Explorer,
 		Playlist,
-		Random,
 	}
 
 	final int PERMREQ_READ_EXT_STORAGE = 1;
@@ -65,47 +76,112 @@ public class MainActivity extends AppCompatActivity {
 		super.onCreate(savedInstanceState);
 		setContentView(R.layout.activity_main);
 
+		Toolbar toolbar = findViewById(R.id.toolbar);
+		setSupportActionBar(toolbar);
+
 		if (0 != init_mods())
 			return;
 		init_system();
 		init_ui();
 		core.dbglog(TAG, "init");
 
+		plist_show();
+
 		/* Prevent from going upper than sdcard because
 		 it may be impossible to come back (due to file permissions) */
 		root_path = Environment.getExternalStorageDirectory().getPath();
-		cur_path = root_path;
+		if (gui.cur_path.length() == 0)
+			gui.cur_path = root_path;
 		bplist.setChecked(true);
 	}
 
 	@Override
-	public void onStart() {
-		if (core != null)
-			core.dbglog(TAG, "onStart()");
-		super.onStart();
+	public void onDestroy() {
+		if (core != null) {
+			core.dbglog(TAG, "onDestroy()");
+			track.close();
+			queue.nfy_rm(quenfy);
+			queue.saveconf();
+			core.saveconf();
+			core.close();
+		}
+		super.onDestroy();
 	}
 
 	@Override
-	public void onStop() {
-		if (core != null) {
-			core.dbglog(TAG, "onStop()");
-			core.close();
-		}
-		track.close();
-		super.onStop();
+	public boolean onCreateOptionsMenu(Menu menu) {
+		Toolbar tb = findViewById(R.id.toolbar);
+		tb.inflateMenu(R.menu.menu);
+		tb.setOnMenuItemClickListener(
+				new Toolbar.OnMenuItemClickListener() {
+					@Override
+					public boolean onMenuItemClick(MenuItem item) {
+						return onOptionsItemSelected(item);
+					}
+				});
+		return true;
 	}
 
-	/**
-	 * Request system permissions
-	 */
-	void init_system() {
-		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
-			String perm = Manifest.permission.READ_EXTERNAL_STORAGE;
-			if (ActivityCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
-				core.dbglog(TAG, "ActivityCompat.requestPermissions");
-				ActivityCompat.requestPermissions(this, new String[]{perm}, PERMREQ_READ_EXT_STORAGE);
+	@Override
+	public boolean onOptionsItemSelected(@NonNull MenuItem item) {
+		switch (item.getItemId()) {
+			case R.id.action_settings: {
+				Intent intent = new Intent(this, SettingsActivity.class);
+				startActivity(intent);
+				return true;
 			}
+
+			case R.id.action_list_rm: {
+				int pos = queue.cur();
+				String fn = queue.list()[pos];
+				queue.remove(pos);
+				gui.msg_show(this, "Removed 1 entry");
+				plist_show2();
+				return true;
+			}
+
+			case R.id.action_file_del: {
+				final int pos = queue.cur();
+				final String fn = queue.list()[pos];
+
+				AlertDialog.Builder b = new AlertDialog.Builder(this);
+				b.setIcon(android.R.drawable.ic_dialog_alert);
+				b.setTitle("File Delete");
+				b.setMessage(String.format("Delete the current file from storage: %s ?", fn));
+				b.setPositiveButton("Delete", new DialogInterface.OnClickListener() {
+					@Override
+					public void onClick(DialogInterface dialog, int which) {
+						file_del(pos, fn);
+					}
+				});
+				b.setNegativeButton("Cancel", null);
+				b.show();
+				return true;
+			}
+
+			case R.id.action_list_add: {
+				Intent intent = new Intent(this, AddURLActivity.class);
+				startActivity(intent);
+				return true;
+			}
+
+			case R.id.action_list_clear:
+				queue.clear();
+				plist_show2();
+				return true;
+
+			case R.id.action_list_showcur: {
+				cmd(Cmd.Playlist);
+				int pos = queue.cur();
+				list.setSelection(pos);
+				return true;
+			}
+
+			case R.id.action_list_showcur_explorer:
+				explorer_showcur();
+				return true;
 		}
+		return super.onOptionsItemSelected(item);
 	}
 
 	/**
@@ -124,19 +200,38 @@ public class MainActivity extends AppCompatActivity {
 	}
 
 	/**
+	 * Request system permissions
+	 */
+	void init_system() {
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+			String perm = Manifest.permission.READ_EXTERNAL_STORAGE;
+			if (ActivityCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
+				core.dbglog(TAG, "ActivityCompat.requestPermissions");
+				ActivityCompat.requestPermissions(this, new String[]{perm}, PERMREQ_READ_EXT_STORAGE);
+			}
+		}
+	}
+
+	/**
 	 * Initialize core and modules
 	 */
 	int init_mods() {
-		core = new Core();
-		if (0 != core.init(this))
+		core = Core.init_once(getApplicationContext());
+		if (core == null)
 			return -1;
+		gui = core.gui();
+		queue = core.queue();
+		quenfy = new QueueNotify() {
+			@Override
+			public void on_change(int what) {
+				plist_show2();
+			}
+		};
+		queue.nfy_add(quenfy);
 		track = new TrackCtl(core, this);
 		track.notifier(new Filter() {
 			@Override
 			public void init() {
-				if (track.is_random())
-					brandom.setChecked(true);
-				show_plist();
 			}
 
 			@Override
@@ -190,14 +285,6 @@ public class MainActivity extends AppCompatActivity {
 			}
 		});
 
-		brandom = findViewById(R.id.brandom);
-		brandom.setOnClickListener(new View.OnClickListener() {
-			@Override
-			public void onClick(View v) {
-				cmd(Cmd.Random);
-			}
-		});
-
 		lbl_name = findViewById(R.id.lname);
 		lbl_pos = findViewById(R.id.lpos);
 
@@ -223,6 +310,24 @@ public class MainActivity extends AppCompatActivity {
 			}
 		});
 
+		tfilter = findViewById(R.id.tfilter);
+		if (gui.filter_show)
+			tfilter.setVisibility(View.VISIBLE);
+		tfilter.addTextChangedListener(new TextWatcher() {
+			@Override
+			public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+			}
+
+			@Override
+			public void onTextChanged(CharSequence s, int start, int before, int count) {
+			}
+
+			@Override
+			public void afterTextChanged(Editable s) {
+				list_filter(s.toString());
+			}
+		});
+
 		list = findViewById(R.id.list);
 		list.setOnItemClickListener(new AdapterView.OnItemClickListener() {
 			@Override
@@ -236,13 +341,57 @@ public class MainActivity extends AppCompatActivity {
 				return list_longclick(position);
 			}
 		});
+		gui.cur_activity = this;
 	}
 
 	/**
-	 * Show status message to the user.
+	 * UI event on button click
 	 */
-	void msg_show(String fmt, Object... args) {
-		Toast.makeText(this, String.format(fmt, args), Toast.LENGTH_SHORT).show();
+	void cmd(Cmd c) {
+		core.dbglog(TAG, "cmd: %s", c.name());
+		switch (c) {
+			case PlayPause:
+				if (track.state() == Track.State.PLAYING) {
+					track.pause();
+					state(2);
+				} else {
+					track.unpause();
+					state(1);
+				}
+				break;
+
+			case Next:
+				track.next();
+				break;
+
+			case Prev:
+				track.prev();
+				break;
+
+			case Explorer:
+				cur_view = -1;
+				list_show(gui.cur_path);
+				bexplorer.setChecked(true);
+				bplist.setChecked(false);
+				tfilter.setVisibility(View.INVISIBLE);
+				break;
+
+			case Playlist:
+				cur_view = 0;
+				bexplorer.setChecked(false);
+				bplist.setChecked(true);
+				if (gui.filter_show)
+					tfilter.setVisibility(View.VISIBLE);
+				plist_show2();
+				break;
+		}
+	}
+
+	void file_del(int pos, String fn) {
+		queue.remove(pos);
+		if (core.file_rename(fn, fn + ".deleted"))
+			gui.msg_show(this, "Renamed 1 file");
+		plist_show2();
 	}
 
 	/**
@@ -269,20 +418,20 @@ public class MainActivity extends AppCompatActivity {
 		for (int i = ndirs; i != fns.length; i++) {
 			pl[n++] = fns[i];
 		}
-		track.setqueue(pl, TrackCtl.SETQUEUE_SET);
+		queue.clear_addmany(pl);
 		core.dbglog(TAG, "added %d items", n);
-		msg_show("Set %d playlist items", n);
+		gui.msg_show(this, "Set %d playlist items", n);
 		play(pos - ndirs);
 	}
 
 	/**
-	 * Recurively add directory contents to this.pl
+	 * Recurively add directory contents to this.tmp_fns
 	 */
 	void add_files_recursive(String dir) {
 		File fdir = new File(dir);
 		if (!fdir.isDirectory()) {
-			if (core.supported(dir))
-				pl.add(dir);
+			if (core.track().supported(dir))
+				tmp_fns.add(dir);
 			return;
 		}
 		File[] files = fdir.listFiles();
@@ -304,8 +453,8 @@ public class MainActivity extends AppCompatActivity {
 
 		for (File f : files) {
 			if (!f.isDirectory())
-				if (core.supported(f.getName()))
-					pl.add(f.getPath());
+				if (core.track().supported(f.getName()))
+					tmp_fns.add(f.getPath());
 		}
 
 		for (File f : files) {
@@ -325,75 +474,111 @@ public class MainActivity extends AppCompatActivity {
 		if (pos == 0 && updir)
 			return false; // no action for a long click on "<UP>"
 
-		pl = new ArrayList<>();
+		tmp_fns = new ArrayList<>();
 		add_files_recursive(fns[pos]);
-		track.setqueue(pl.toArray(new String[0]), TrackCtl.SETQUEUE_ADD);
-		core.dbglog(TAG, "added %d items", pl.size());
-		msg_show("Added %d items to playlist", pl.size());
+		queue.addmany(tmp_fns.toArray(new String[0]));
+		core.dbglog(TAG, "added %d items", tmp_fns.size());
+		gui.msg_show(this, "Added %d items to playlist", tmp_fns.size());
 		return true;
 	}
 
-	/**
-	 * UI event on button click
-	 */
-	void cmd(Cmd c) {
-		core.dbglog(TAG, "cmd: %s", c.name());
-		switch (c) {
-			case PlayPause:
-				if (track.state() == Track.State.PLAYING) {
-					track.pause();
-					bplay.setImageResource(R.drawable.ic_play);
-				} else {
-					track.unpause();
-					bplay.setImageResource(R.drawable.ic_pause);
-				}
-				break;
+	void explorer_showcur() {
+		int pos = queue.cur();
+		String[] pl = queue.list();
+		if (pl.length == 0)
+			return;
+		String fn = pl[pos];
+		if (!core.track().supported(fn))
+			return;
+		gui.cur_path = new File(fn).getParent();
+		cmd(Cmd.Explorer);
 
-			case Next:
-				track.next();
+		int i = 0;
+		for (String s : fns) {
+			if (s.equalsIgnoreCase(fn)) {
+				list.smoothScrollToPosition(i);
 				break;
-
-			case Prev:
-				track.prev();
-				break;
-
-			case Explorer:
-				cur_view = -1;
-				list_show(this.cur_path);
-				bexplorer.setChecked(true);
-				bplist.setChecked(false);
-				break;
-
-			case Playlist:
-				cur_view = 0;
-				bexplorer.setChecked(false);
-				bplist.setChecked(true);
-				show_plist();
-				break;
-
-			case Random:
-				track.random(brandom.isChecked());
-				break;
+			}
+			i++;
 		}
 	}
 
 	/**
 	 * Show the playlist items
 	 */
-	void show_plist() {
-		String[] l = track.queue();
+	void plist_show() {
+		if (cur_view != 0)
+			return;
+		String[] l = queue.list();
 		ArrayList<String> names = new ArrayList<>();
 		int i = 1;
-		try {
-			for (String s : l) {
-				names.add(String.format("%d. %s", i++, new File(s).getName()));
-			}
-		} catch (Exception e) {
-			core.errlog(TAG, "%s", e);
-			return;
+		for (String s : l) {
+			String[] path_name = Splitter.path_split2(s);
+			names.add(String.format("%d. %s", i++, path_name[1]));
 		}
 		ArrayAdapter<String> adapter = new ArrayAdapter<>(this, R.layout.list_row, names.toArray(new String[0]));
 		list.setAdapter(adapter);
+	}
+
+	void plist_show2() {
+		if (cur_view != 0)
+			return;
+		if (filter_strlen != 0)
+			list_filter(tfilter.getText().toString());
+		else
+			plist_show();
+	}
+
+	void list_filter(String filter) {
+		if (cur_view != 0)
+			return;
+		core.dbglog(TAG, "list_filter: %s", filter);
+
+		if (filter_strlen != 0 && filter.length() == 0) {
+			filter_strlen = 0;
+			plist_show();
+			return;
+		}
+
+		boolean inc = (filter.length() > filter_strlen);
+		if (filter.length() < 2) {
+			if (!inc)
+				plist_show();
+			return;
+		}
+
+		filter = filter.toLowerCase();
+
+		ArrayList<Integer> fi = new ArrayList<>();
+		ArrayList<String> names = new ArrayList<>();
+		String[] l = queue.list();
+		int n = 1;
+
+		if (filter_strlen == 0 || !inc) {
+			for (int i = 0; i != l.length; i++) {
+				String s = l[i];
+				if (!s.toLowerCase().contains(filter))
+					continue;
+				String[] path_name = Splitter.path_split2(s);
+				names.add(String.format("%d. %s", n++, path_name[1]));
+				fi.add(i);
+			}
+
+		} else {
+			for (Integer i : filtered_idx) {
+				String s = l[i];
+				if (!s.toLowerCase().contains(filter))
+					continue;
+				String[] path_name = Splitter.path_split2(s);
+				names.add(String.format("%d. %s", n++, path_name[1]));
+				fi.add(i);
+			}
+		}
+
+		ArrayAdapter<String> adapter = new ArrayAdapter<>(this, R.layout.list_row, names.toArray(new String[0]));
+		list.setAdapter(adapter);
+		filtered_idx = fi;
+		filter_strlen = filter.length();
 	}
 
 	/**
@@ -413,7 +598,7 @@ public class MainActivity extends AppCompatActivity {
 				String parent = fdir.getParent();
 				if (parent != null) {
 					fnames.add(parent);
-					names.add("<UP>");
+					names.add("<UP> - " + parent);
 					updir = true;
 					ndirs++;
 				}
@@ -444,7 +629,7 @@ public class MainActivity extends AppCompatActivity {
 						continue;
 					}
 
-					if (!core.supported(f.getName()))
+					if (!core.track().supported(f.getName()))
 						continue;
 					s = f.getName();
 					names.add(s);
@@ -453,11 +638,12 @@ public class MainActivity extends AppCompatActivity {
 			}
 		} catch (Exception e) {
 			core.errlog(TAG, "list_show: %s", e);
+			fns = new String[0];
 			return;
 		}
 
 		fns = fnames.toArray(new String[0]);
-		cur_path = path;
+		gui.cur_path = path;
 		ArrayAdapter<String> adapter = new ArrayAdapter<>(this, R.layout.list_row, names.toArray(new String[0]));
 		list.setAdapter(adapter);
 		this.updir = updir;
@@ -469,7 +655,10 @@ public class MainActivity extends AppCompatActivity {
 	 * Start playing a new track
 	 */
 	void play(int pos) {
-		track.play(pos);
+		if (filter_strlen != 0) {
+			pos = filtered_idx.get(pos);
+		}
+		queue.play(pos);
 	}
 
 	/**
@@ -479,6 +668,25 @@ public class MainActivity extends AppCompatActivity {
 		track.seek(pos);
 	}
 
+	void state(int st) {
+		switch (st) {
+			case 0:
+				getSupportActionBar().setTitle("fmedia");
+				bplay.setImageResource(R.drawable.ic_play);
+				break;
+
+			case 1:
+				getSupportActionBar().setTitle("fmedia");
+				bplay.setImageResource(R.drawable.ic_pause);
+				break;
+
+			case 2:
+				getSupportActionBar().setTitle("[Paused] fmedia");
+				bplay.setImageResource(R.drawable.ic_play);
+				break;
+		}
+	}
+
 	/**
 	 * Called by Track when a new track is initialized
 	 */
@@ -486,12 +694,11 @@ public class MainActivity extends AppCompatActivity {
 		lbl_name.setText(name);
 		progs.setProgress(0);
 		if (time_total < 0) {
-			time_total = -time_total;
-			this.time_total = time_total;
-			bplay.setImageResource(R.drawable.ic_play);
+			this.time_total = -time_total;
+			state(2);
 		} else {
 			this.time_total = time_total;
-			bplay.setImageResource(R.drawable.ic_pause);
+			state(1);
 		}
 		return 0;
 	}
@@ -504,7 +711,7 @@ public class MainActivity extends AppCompatActivity {
 		lbl_pos.setText("");
 		if (stopped) {
 			progs.setProgress(0);
-			bplay.setImageResource(R.drawable.ic_play);
+			state(0);
 		}
 	}
 
@@ -514,7 +721,7 @@ public class MainActivity extends AppCompatActivity {
 	int update_track(int playtime) {
 		if (playtime < 0) {
 			playtime = -playtime;
-			bplay.setImageResource(R.drawable.ic_play);
+			state(2);
 		}
 		int pos = playtime / 1000;
 		int dur = time_total / 1000;

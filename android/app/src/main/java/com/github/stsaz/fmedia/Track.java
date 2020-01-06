@@ -4,6 +4,9 @@ import android.media.MediaPlayer;
 import android.os.Handler;
 import android.os.Looper;
 
+import androidx.annotation.NonNull;
+import androidx.collection.SimpleArrayMap;
+
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Timer;
@@ -42,6 +45,12 @@ abstract class Filter {
 	}
 }
 
+class TrackHandle {
+	MediaPlayer mp;
+	Track.State state;
+	String curname;
+}
+
 /**
  * Chain: SysJobs -> Queue -> Svc
  */
@@ -49,11 +58,10 @@ class Track {
 	private final String TAG = "Track";
 	private Core core;
 	private ArrayList<Filter> filters;
+	private SimpleArrayMap<String, Boolean> supp_exts;
 
-	private MediaPlayer mp;
+	private TrackHandle t;
 	private Timer tmr;
-	private String curname;
-	private State state;
 	private Handler mloop;
 
 	enum State {
@@ -64,24 +72,52 @@ class Track {
 
 	Track(Core core) {
 		this.core = core;
+		t = new TrackHandle();
 		filters = new ArrayList<>();
-		state = State.NONE;
+		t.state = State.NONE;
 
-		mp = new MediaPlayer();
-		mp.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+		t.mp = new MediaPlayer();
+		t.mp.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
 			public void onPrepared(MediaPlayer mp) {
-				on_start();
+				on_start(t);
 			}
 		});
-		mp.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+		t.mp.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
 			public void onCompletion(MediaPlayer mp) {
-				on_complete();
+				on_complete(t);
 			}
 		});
 
 		mloop = new Handler(Looper.getMainLooper());
 
+		String[] exts = {"mp3", "ogg", "m4a", "wav", "flac", "mp4", "mkv", "avi"};
+		supp_exts = new SimpleArrayMap<>(exts.length);
+		for (String e : exts) {
+			supp_exts.put(e, true);
+		}
+
 		core.dbglog(TAG, "init");
+	}
+
+	boolean supported_url(@NonNull String name) {
+		if (name.startsWith("http://") || name.startsWith("https://"))
+			return true;
+		return false;
+	}
+
+	/**
+	 * Return TRUE if file name's extension is supported
+	 */
+	boolean supported(@NonNull String name) {
+		if (supported_url(name))
+			return true;
+
+		int dot = name.lastIndexOf('.');
+		if (dot <= 0)
+			return false;
+		dot++;
+		String ext = name.substring(dot);
+		return supp_exts.containsKey(ext);
 	}
 
 	void filter_add(Filter f) {
@@ -89,7 +125,7 @@ class Track {
 	}
 
 	State state() {
-		return state;
+		return t.state;
 	}
 
 	/**
@@ -97,18 +133,18 @@ class Track {
 	 */
 	void start(String url) {
 		core.dbglog(TAG, "play: %s", url);
-		if (state != State.NONE)
+		if (t.state != State.NONE)
 			return;
 
 		try {
-			mp.setDataSource(url);
+			t.mp.setDataSource(url);
 		} catch (Exception e) {
 			core.errlog(TAG, "mp.setDataSource: %s", e);
 			return;
 		}
 
-		curname = new File(url).getName();
-		mp.prepareAsync();
+		t.curname = new File(url).getName();
+		t.mp.prepareAsync();
 	}
 
 	/**
@@ -120,11 +156,11 @@ class Track {
 			tmr = null;
 		}
 		try {
-			mp.stop();
+			t.mp.stop();
 		} catch (Exception ignored) {
 		}
-		mp.reset();
-		state = State.NONE;
+		t.mp.reset();
+		t.state = State.NONE;
 	}
 
 	/**
@@ -140,37 +176,37 @@ class Track {
 
 	void pause() {
 		core.dbglog(TAG, "pause");
-		if (state != State.PLAYING)
+		if (t.state != State.PLAYING)
 			return;
-		mp.pause();
-		state = State.PAUSED;
+		t.mp.pause();
+		t.state = State.PAUSED;
 	}
 
 	void unpause() {
 		core.dbglog(TAG, "unpause");
-		if (state != State.PAUSED)
+		if (t.state != State.PAUSED)
 			return;
-		mp.start();
-		state = State.PLAYING;
+		t.mp.start();
+		t.state = State.PLAYING;
 	}
 
 	void seek(int percent) {
 		core.dbglog(TAG, "seek: %d", percent);
-		if (state != State.PLAYING && state != State.PAUSED)
+		if (t.state != State.PLAYING && t.state != State.PAUSED)
 			return;
-		int ms = percent * mp.getDuration() / 100;
-		mp.seekTo(ms);
+		int ms = percent * t.mp.getDuration() / 100;
+		t.mp.seekTo(ms);
 	}
 
 	/**
 	 * Called by MediaPlayer when it's ready to start
 	 */
-	private void on_start() {
+	private void on_start(TrackHandle t) {
 		core.dbglog(TAG, "prepared");
 
-		int dur = mp.getDuration();
+		int dur = t.mp.getDuration();
 		for (Filter f : filters) {
-			int r = f.open(curname, dur);
+			int r = f.open(t.curname, dur);
 			if (r != 0) {
 				core.errlog(TAG, "f.open(): %d", r);
 				stop();
@@ -186,16 +222,16 @@ class Track {
 			}
 		}, 0, 500);
 
-		mp.start();
-		state = State.PLAYING;
+		t.mp.start();
+		t.state = State.PLAYING;
 	}
 
 	/**
 	 * Called by MediaPlayer when it's finished playing
 	 */
-	private void on_complete() {
+	private void on_complete(TrackHandle t) {
 		core.dbglog(TAG, "completed");
-		if (!(state == State.PLAYING || state == State.PAUSED))
+		if (!(t.state == State.PLAYING || t.state == State.PAUSED))
 			return;
 		reset();
 		for (Filter f : filters) {
@@ -206,7 +242,7 @@ class Track {
 	private void onTimer() {
 		mloop.post(new Runnable() {
 			public void run() {
-				update();
+				update(t);
 			}
 		});
 	}
@@ -214,10 +250,10 @@ class Track {
 	/**
 	 * Notify filters on the track's progress
 	 */
-	private void update() {
-		if (state != State.PLAYING)
+	private void update(TrackHandle t) {
+		if (t.state != State.PLAYING)
 			return;
-		int pos = mp.getCurrentPosition();
+		int pos = t.mp.getCurrentPosition();
 		for (Filter f : filters) {
 			f.process(pos);
 		}

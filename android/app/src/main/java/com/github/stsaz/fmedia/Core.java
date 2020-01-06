@@ -1,9 +1,8 @@
 package com.github.stsaz.fmedia;
 
 import androidx.annotation.NonNull;
-import androidx.collection.SimpleArrayMap;
 
-import android.content.ContextWrapper;
+import android.content.Context;
 import android.util.Log;
 
 import java.io.BufferedOutputStream;
@@ -11,29 +10,44 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 
-class Core {
+class Core extends CoreBase {
+	private static Core instance;
+	private int refcount;
+
 	private final String TAG = "Core";
-	private SimpleArrayMap<String, Boolean> supp_exts;
+	private final String CONF_FN = "fmedia-user.conf";
+
+	private GUI gui;
 	private Queue qu;
 	private Track track;
 	private SysJobs sysjobs;
 
 	String work_dir;
-	ContextWrapper context;
+	Context context;
 
-	int init(@NonNull ContextWrapper ctx) {
+	static Core getInstance() {
+		instance.dbglog(instance.TAG, "getInstance");
+		instance.refcount++;
+		return instance;
+	}
+
+	static Core init_once(@NonNull Context ctx) {
+		if (instance == null) {
+			Core c = new Core();
+			c.refcount = 1;
+			if (0 != c.init(ctx))
+				return null;
+			instance = c;
+			return c;
+		}
+		return getInstance();
+	}
+
+	private int init(@NonNull Context ctx) {
 		context = ctx;
 		work_dir = ctx.getCacheDir().getPath();
 
-		String[] exts = {"mp3", "ogg", "m4a", "wav", "flac", "mp4", "mkv", "avi"};
-		supp_exts = new SimpleArrayMap<>(exts.length);
-		for (String e : exts) {
-			supp_exts.put(e, true);
-		}
-		return 0;
-	}
-
-	int init2() {
+		gui = new GUI(this);
 		track = new Track(this);
 		sysjobs = new SysJobs();
 		sysjobs.init(this);
@@ -45,11 +59,16 @@ class Core {
 		return 0;
 	}
 
+	void unref() {
+		dbglog(TAG, "unref(): %d", refcount);
+		refcount--;
+	}
+
 	void close() {
-		dbglog(TAG, "close()");
-		if (qu == null)
+		dbglog(TAG, "close(): %d", refcount);
+		if (--refcount != 0)
 			return;
-		saveconf();
+		instance = null;
 		qu.close();
 		sysjobs.uninit();
 	}
@@ -62,48 +81,72 @@ class Core {
 		return track;
 	}
 
+	GUI gui() {
+		return gui;
+	}
+
 	/**
 	 * Save configuration
 	 */
-	private void saveconf() {
-		String fn = work_dir + "/fmedia-user.conf";
-		if (file_writeall(fn, qu.writeconf().getBytes(), 0))
-			dbglog(TAG, "saveconf ok");
+	void saveconf() {
+		String fn = work_dir + "/" + CONF_FN;
+		StringBuilder sb = new StringBuilder();
+		sb.append(qu.writeconf());
+		sb.append(gui.writeconf());
+		if (!file_writeall(fn, sb.toString().getBytes(), FILE_WRITE_SAFE))
+			errlog(TAG, "saveconf: %s", fn);
+		else
+			dbglog(TAG, "saveconf ok: %s", fn);
 	}
 
 	/**
 	 * Load configuration
 	 */
 	private void loadconf() {
-		byte[] b = file_readall(work_dir + "/fmedia-user.conf");
+		String fn = work_dir + "/" + CONF_FN;
+		byte[] b = file_readall(fn);
 		if (b == null)
 			return;
 		String bs = new String(b);
-		qu.readconf(bs);
-		dbglog(TAG, "loadconf: %s", bs);
-	}
 
-	/**
-	 * Return TRUE if file name's extension is supported
-	 */
-	boolean supported(@NonNull String name) {
-		int dot = name.lastIndexOf('.');
-		if (dot <= 0)
-			return false;
-		dot++;
-		String ext = name.substring(dot);
-		return supp_exts.containsKey(ext);
+		Splitter spl = new Splitter();
+		while (true) {
+			String ln = spl.next(bs, '\n', 0);
+			if (ln == null)
+				break;
+
+			Splitter spl2 = new Splitter();
+			String k, v;
+			k = spl2.next(ln, ' ', 0);
+			v = spl2.remainder(ln);
+			if (k == null || v == null)
+				continue;
+
+			if (0 == qu.readconf(k, v))
+				continue;
+			gui.readconf(k, v);
+		}
+
+		dbglog(TAG, "loadconf: %s: %s", fn, bs);
 	}
 
 	void errlog(String mod, String fmt, Object... args) {
 		if (BuildConfig.DEBUG)
 			Log.e(mod, String.format(fmt, args));
+		if (gui != null)
+			gui.on_error(fmt, args);
 	}
 
 	void dbglog(String mod, String fmt, Object... args) {
 		if (BuildConfig.DEBUG)
 			Log.d(mod, String.format(fmt, args));
 	}
+}
+
+abstract class CoreBase {
+	private final String TAG = "Core";
+
+	abstract void errlog(String mod, String fmt, Object... args);
 
 	int str_toint(String s, int def) {
 		try {
@@ -111,6 +154,16 @@ class Core {
 		} catch (Exception e) {
 			return def;
 		}
+	}
+
+	boolean str_tobool(String s) {
+		return s.equalsIgnoreCase("true");
+	}
+
+	String str_frombool(boolean b) {
+		if (b)
+			return "true";
+		return "false";
 	}
 
 	static final int FILE_WRITE_SAFE = 1;
@@ -154,11 +207,26 @@ class Core {
 		}
 		return b;
 	}
+
+	boolean file_rename(String old, String newname) {
+		boolean r;
+		try {
+			File f = new File(old);
+			r = f.renameTo(new File(newname));
+		} catch (Exception e) {
+			errlog(TAG, "file_rename: %s", e);
+			return false;
+		}
+		return r;
+	}
 }
 
 class Splitter {
 	private int off;
 
+	/**
+	 * Return null if no more entries.
+	 */
 	String next(String s, char by, int flags) {
 		if (off == s.length())
 			return null;
@@ -172,5 +240,22 @@ class Splitter {
 			off = pos + 1;
 		}
 		return r;
+	}
+
+	String remainder(String s) {
+		return s.substring(off);
+	}
+
+	static String[] path_split2(String s) {
+		int pos = s.lastIndexOf('/');
+		String[] parts = new String[2];
+		if (pos != -1) {
+			parts[0] = s.substring(0, pos);
+			parts[1] = s.substring(pos + 1);
+		} else {
+			parts[0] = "";
+			parts[1] = s;
+		}
+		return parts;
 	}
 }

@@ -39,17 +39,18 @@ public class Svc extends MediaBrowserServiceCompat {
 	Handler mloop;
 	Runnable delayed_stop;
 
-	static final String CMD_QUEUE_SET = "queue.set";
-	static final String CMD_QUEUE_ADD = "queue.add";
-
 	@Override
 	public void onCreate() {
 		super.onCreate();
 
-		core = new Core();
-		core.init(this);
-		core.init2();
+		core = Core.getInstance();
 		queue = core.queue();
+		queue.nfy_add(new QueueNotify() {
+			@Override
+			public void on_change(int what) {
+				sess_setqueue();
+			}
+		});
 		track = core.track();
 		track.filter_add(new Filter() {
 			@Override
@@ -123,7 +124,9 @@ public class Svc extends MediaBrowserServiceCompat {
 				| PlaybackStateCompat.ACTION_SEEK_TO
 				| PlaybackStateCompat.ACTION_SKIP_TO_NEXT
 				| PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
-				| PlaybackStateCompat.ACTION_SKIP_TO_QUEUE_ITEM);
+				| PlaybackStateCompat.ACTION_SKIP_TO_QUEUE_ITEM
+				| PlaybackStateCompat.ACTION_SET_SHUFFLE_MODE
+				| PlaybackStateCompat.ACTION_SET_REPEAT_MODE);
 		pstate.setActiveQueueItemId(0);
 		state = PlaybackStateCompat.STATE_STOPPED;
 		pstate.setState(state, 0, 0);
@@ -205,24 +208,6 @@ public class Svc extends MediaBrowserServiceCompat {
 					val = true;
 				queue.repeat = val;
 				sess.setRepeatMode(repeatMode);
-			}
-
-			@Override
-			public void onCustomAction(String action, Bundle extras) {
-				core.dbglog(TAG, "MediaSessionCompat.onCustomAction: %s", action);
-				switch (action) {
-					case CMD_QUEUE_SET:
-						queue.clear();
-					case CMD_QUEUE_ADD:
-						String[] list = extras.getStringArray("list");
-						if (list == null)
-							break;
-						for (String s : list) {
-							queue.add(s);
-						}
-						sess_setqueue();
-						break;
-				}
 			}
 		});
 	}
@@ -319,6 +304,8 @@ public class Svc extends MediaBrowserServiceCompat {
 			sess.setActive(true);
 			startService(new Intent(this, Svc.class));
 		}
+
+		pstate.setActiveQueueItemId(queue.cur());
 
 		MediaMetadataCompat.Builder meta = new MediaMetadataCompat.Builder();
 		meta.putString(MediaMetadataCompat.METADATA_KEY_MEDIA_URI, name);

@@ -2,14 +2,12 @@ package com.github.stsaz.fmedia;
 
 import android.app.Activity;
 import android.content.ComponentName;
-import android.os.Bundle;
 import android.support.v4.media.MediaBrowserCompat;
 import android.support.v4.media.MediaMetadataCompat;
 import android.support.v4.media.session.MediaControllerCompat;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
 
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -70,11 +68,6 @@ class TrackCtl {
 			public void onSessionDestroyed() {
 				core.dbglog(TAG, "MediaControllerCompat.onSessionDestroyed");
 				notifier.close(true);
-			}
-
-			@Override
-			public void onQueueChanged(List<MediaSessionCompat.QueueItem> queue) {
-				core.dbglog(TAG, "MediaControllerCompat.onQueueChanged");
 			}
 
 			@Override
@@ -174,39 +167,5 @@ class TrackCtl {
 
 	void seek(int pos) {
 		ctl.getTransportControls().seekTo(pos);
-	}
-
-	boolean is_random() {
-		int mode = ctl.getShuffleMode();
-		return mode == PlaybackStateCompat.SHUFFLE_MODE_ALL;
-	}
-
-	void random(boolean val) {
-		int mode = PlaybackStateCompat.SHUFFLE_MODE_ALL;
-		if (!val)
-			mode = PlaybackStateCompat.SHUFFLE_MODE_NONE;
-		ctl.getTransportControls().setShuffleMode(mode);
-	}
-
-	static final int SETQUEUE_SET = 0; // clear and add items
-	static final int SETQUEUE_ADD = 1; // add items
-
-	void setqueue(String[] list, int flags) {
-		Bundle b = new Bundle();
-		b.putStringArray("list", list);
-		String cmd = Svc.CMD_QUEUE_SET;
-		if (flags == SETQUEUE_ADD)
-			cmd = Svc.CMD_QUEUE_ADD;
-		ctl.getTransportControls().sendCustomAction(cmd, b);
-		core.dbglog(TAG, "queue: %s: %d", cmd, list.length);
-	}
-
-	String[] queue() {
-		List<MediaSessionCompat.QueueItem> q = ctl.getQueue();
-		ArrayList<String> l = new ArrayList<>(q.size());
-		for (MediaSessionCompat.QueueItem i : q) {
-			l.add(i.getDescription().getMediaId());
-		}
-		return l.toArray(new String[0]);
 	}
 }

@@ -15,11 +15,34 @@
 		android:supportsRtl="true"
 		android:theme="@style/AppTheme">
 
-		<receiver android:name="androidx.media.session.MediaButtonReceiver" >
+		<activity
+			android:name=".MainActivity"
+			android:label="@string/app_name"
+			android:theme="@style/AppTheme.NoActionBar">
 			<intent-filter>
-				<action android:name="android.intent.action.MEDIA_BUTTON" />
+				<action android:name="android.intent.action.MAIN" />
+
+				<category android:name="android.intent.category.LAUNCHER" />
 			</intent-filter>
-		</receiver>
+		</activity>
+
+		<activity
+			android:name=".SettingsActivity"
+			android:label="Settings"
+			android:parentActivityName=".MainActivity">
+			<meta-data
+				android:name="android.support.PARENT_ACTIVITY"
+				android:value="com.github.stsaz.fmedia.MainActivity" />
+		</activity>
+
+		<activity
+			android:name=".AddURLActivity"
+			android:label="Add to Playlist"
+			android:parentActivityName=".MainActivity">
+			<meta-data
+				android:name="android.support.PARENT_ACTIVITY"
+				android:value="com.github.stsaz.fmedia.MainActivity" />
+		</activity>
 
 		<service
 			android:name=".Svc"
@@ -30,13 +53,11 @@
 			</intent-filter>
 		</service>
 
-		<activity android:name=".MainActivity">
+		<receiver android:name="androidx.media.session.MediaButtonReceiver">
 			<intent-filter>
-				<action android:name="android.intent.action.MAIN" />
-
-				<category android:name="android.intent.category.LAUNCHER" />
+				<action android:name="android.intent.action.MEDIA_BUTTON" />
 			</intent-filter>
-		</activity>
+		</receiver>
 	</application>
 
 </manifest>
