@@ -21,6 +21,7 @@ class Core extends CoreBase {
 	private Queue qu;
 	private Track track;
 	private SysJobs sysjobs;
+	private MP mp;
 
 	String work_dir;
 	Context context;
@@ -49,9 +50,11 @@ class Core extends CoreBase {
 
 		gui = new GUI(this);
 		track = new Track(this);
+		qu = new Queue(this);
+		mp = new MP();
+		mp.init(this);
 		sysjobs = new SysJobs();
 		sysjobs.init(this);
-		qu = new Queue(this);
 
 		loadconf();
 

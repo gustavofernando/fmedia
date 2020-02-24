@@ -39,21 +39,14 @@ class Queue {
 		track = core.track();
 		track.filter_add(new Filter() {
 			@Override
-			public int open(String name, int time_total) {
+			public int open(TrackHandle t) {
 				active = true;
 				return 0;
 			}
 
 			@Override
-			public void close(boolean stopped) {
-				active = false;
-				if (!stopped) {
-					mloop.post(new Runnable() {
-						public void run() {
-							next();
-						}
-					});
-				}
+			public void close(TrackHandle t) {
+				on_close(t);
 			}
 		});
 		pl = new PList();
@@ -138,6 +131,20 @@ class Queue {
 	}
 
 	/**
+	 * Called after a track has been finished.
+	 */
+	private void on_close(TrackHandle t) {
+		active = false;
+		if (!t.stopped && !t.error) {
+			mloop.post(new Runnable() {
+				public void run() {
+					next();
+				}
+			});
+		}
+	}
+
+	/**
 	 * Set Random switch
 	 */
 	void random(boolean val) {
@@ -157,6 +164,8 @@ class Queue {
 	void remove(int pos) {
 		core.dbglog(TAG, "remove: %d", pos);
 		pl.plist.remove(pos);
+		if (pos <= pl.curpos)
+			pl.curpos--;
 	}
 
 	/**

@@ -56,7 +56,7 @@ class SysJobs extends Filter {
 	}
 
 	@Override
-	public int open(String name, int time_total) {
+	public int open(TrackHandle t) {
 		mloop.removeCallbacks(delayed_abandon_focus);
 		if (!afocus) {
 			int r = afocus_request();
@@ -68,8 +68,8 @@ class SysJobs extends Filter {
 	}
 
 	@Override
-	public void close(boolean stopped) {
-		if (stopped && afocus)
+	public void close(TrackHandle t) {
+		if (t.stopped && afocus)
 			mloop.postDelayed(delayed_abandon_focus, 1000);
 	}
 
@@ -143,6 +143,8 @@ class SysJobs extends Filter {
 
 			case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
 			case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
+				if (track.state() != Track.State.PLAYING)
+					break;
 				transient_pause = true;
 				track.pause();
 				break;

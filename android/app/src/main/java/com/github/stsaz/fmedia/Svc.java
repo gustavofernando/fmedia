@@ -54,17 +54,17 @@ public class Svc extends MediaBrowserServiceCompat {
 		track = core.track();
 		track.filter_add(new Filter() {
 			@Override
-			public int open(String name, int time_total) {
-				return new_track(name, time_total);
+			public int open(TrackHandle t) {
+				return new_track(t);
 			}
 
 			@Override
-			public void close(boolean stopped) {
-				close_track(stopped);
+			public void close(TrackHandle t) {
+				close_track(t);
 			}
 
 			@Override
-			public int process(int playtime) {
+			public int process(TrackHandle t) {
 				return update_track(playtime);
 			}
 		});
@@ -297,7 +297,7 @@ public class Svc extends MediaBrowserServiceCompat {
 	/**
 	 * Called by Track when a new track is initialized
 	 */
-	int new_track(String name, int time_total) {
+	int new_track(TrackHandle t) {
 		mloop.removeCallbacks(delayed_stop);
 		playtime = 0;
 		if (state == PlaybackStateCompat.STATE_STOPPED) {
@@ -308,19 +308,19 @@ public class Svc extends MediaBrowserServiceCompat {
 		pstate.setActiveQueueItemId(queue.cur());
 
 		MediaMetadataCompat.Builder meta = new MediaMetadataCompat.Builder();
-		meta.putString(MediaMetadataCompat.METADATA_KEY_MEDIA_URI, name);
-		meta.putLong(MediaMetadataCompat.METADATA_KEY_DURATION, time_total);
+		meta.putString(MediaMetadataCompat.METADATA_KEY_MEDIA_URI, t.name);
+		meta.putLong(MediaMetadataCompat.METADATA_KEY_DURATION, t.time_total);
 		sess.setMetadata(meta.build());
 
 		sess_state(PlaybackStateCompat.STATE_BUFFERING, 0);
-		fg(name);
+		fg(t.name);
 		return 0;
 	}
 
 	/**
 	 * Called by Track after a track is finished
 	 */
-	void close_track(boolean stopped) {
+	void close_track(TrackHandle t) {
 		sess_state(PlaybackStateCompat.STATE_SKIPPING_TO_NEXT, 0);
 		mloop.postDelayed(delayed_stop, 1000);
 	}

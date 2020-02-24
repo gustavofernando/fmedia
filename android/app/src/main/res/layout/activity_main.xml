@@ -20,9 +20,7 @@
 
 	</com.google.android.material.appbar.AppBarLayout>
 
-	<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
-		xmlns:app="http://schemas.android.com/apk/res-auto"
-		xmlns:tools="http://schemas.android.com/tools"
+	<androidx.constraintlayout.widget.ConstraintLayout
 		android:layout_width="match_parent"
 		android:layout_height="match_parent"
 		app:layout_behavior="@string/appbar_scrolling_view_behavior"
@@ -108,11 +106,20 @@
 				app:layout_constraintTop_toBottomOf="@+id/bexplorer" />
 
 			<ImageButton
+				android:id="@+id/brec"
+				android:layout_width="64dp"
+				android:layout_height="64dp"
+				android:src="@drawable/ic_rec"
+				app:layout_constraintStart_toStartOf="parent"
+				app:layout_constraintTop_toBottomOf="@+id/seekbar" />
+
+
+			<ImageButton
 				android:id="@+id/bplay"
 				android:layout_width="64dp"
 				android:layout_height="64dp"
 				android:src="@drawable/ic_play"
-				app:layout_constraintStart_toStartOf="parent"
+				app:layout_constraintStart_toEndOf="@+id/brec"
 				app:layout_constraintTop_toBottomOf="@+id/seekbar" />
 
 			<ImageButton
@@ -134,9 +141,8 @@
 			<TextView
 				android:id="@+id/lpos"
 				android:layout_width="match_parent"
-				android:layout_height="32dp"
-				android:layout_marginLeft="200dp"
-				android:layout_marginTop="20dp"
+				android:layout_height="64dp"
+				android:layout_marginLeft="264dp"
 				android:textColor="@color/colorList"
 				android:textSize="20sp"
 				app:layout_constraintEnd_toEndOf="parent"

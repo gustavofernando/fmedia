@@ -30,7 +30,10 @@ import android.widget.ToggleButton;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Calendar;
 import java.util.Comparator;
+import java.util.Date;
+import java.util.GregorianCalendar;
 
 public class MainActivity extends AppCompatActivity {
 	private final String TAG = "UI";
@@ -38,8 +41,11 @@ public class MainActivity extends AppCompatActivity {
 	GUI gui;
 	Queue queue;
 	QueueNotify quenfy;
-	TrackCtl track;
-	int time_total;
+	Track track;
+	Filter trk_nfy;
+	TrackCtl trackctl;
+
+	TrackHandle trec;
 
 	// Explorer:
 	String root_path; // upmost filesystem path
@@ -53,6 +59,7 @@ public class MainActivity extends AppCompatActivity {
 	ArrayList<Integer> filtered_idx;
 
 	TextView lbl_name;
+	ImageButton brec;
 	ImageButton bplay;
 	TextView lbl_pos;
 	ListView list;
@@ -62,6 +69,7 @@ public class MainActivity extends AppCompatActivity {
 	EditText tfilter;
 
 	enum Cmd {
+		Rec,
 		PlayPause,
 		Next,
 		Prev,
@@ -86,23 +94,40 @@ public class MainActivity extends AppCompatActivity {
 		core.dbglog(TAG, "init");
 
 		plist_show();
+		list.setSelection(gui.list_pos);
 
 		/* Prevent from going upper than sdcard because
 		 it may be impossible to come back (due to file permissions) */
 		root_path = Environment.getExternalStorageDirectory().getPath();
 		if (gui.cur_path.length() == 0)
 			gui.cur_path = root_path;
+		if (gui.rec_path.length() == 0)
+			gui.rec_path = root_path;
 		bplist.setChecked(true);
+
+		// If already playing - get in sync
+		track.filter_notify(trk_nfy);
+	}
+
+	@Override
+	protected void onStop() {
+		if (core != null) {
+			core.dbglog(TAG, "onStop()");
+			queue.saveconf();
+			if (cur_view == 0)
+				gui.list_pos = list.getFirstVisiblePosition();
+			core.saveconf();
+		}
+		super.onStop();
 	}
 
 	@Override
 	public void onDestroy() {
 		if (core != null) {
 			core.dbglog(TAG, "onDestroy()");
-			track.close();
+			track.filter_rm(trk_nfy);
+			trackctl.close();
 			queue.nfy_rm(quenfy);
-			queue.saveconf();
-			core.saveconf();
 			core.close();
 		}
 		super.onDestroy();
@@ -137,6 +162,7 @@ public class MainActivity extends AppCompatActivity {
 				queue.remove(pos);
 				gui.msg_show(this, "Removed 1 entry");
 				plist_show2();
+				list.setSelection(gui.list_pos);
 				return true;
 			}
 
@@ -204,10 +230,17 @@ public class MainActivity extends AppCompatActivity {
 	 */
 	void init_system() {
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
-			String perm = Manifest.permission.READ_EXTERNAL_STORAGE;
-			if (ActivityCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
-				core.dbglog(TAG, "ActivityCompat.requestPermissions");
-				ActivityCompat.requestPermissions(this, new String[]{perm}, PERMREQ_READ_EXT_STORAGE);
+			String[] perms = new String[]{
+					Manifest.permission.READ_EXTERNAL_STORAGE,
+					Manifest.permission.WRITE_EXTERNAL_STORAGE,
+					Manifest.permission.RECORD_AUDIO
+			};
+			for (String perm : perms) {
+				if (ActivityCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
+					core.dbglog(TAG, "ActivityCompat.requestPermissions");
+					ActivityCompat.requestPermissions(this, perms, PERMREQ_READ_EXT_STORAGE);
+					break;
+				}
 			}
 		}
 	}
@@ -228,27 +261,27 @@ public class MainActivity extends AppCompatActivity {
 			}
 		};
 		queue.nfy_add(quenfy);
-		track = new TrackCtl(core, this);
-		track.notifier(new Filter() {
+		track = core.track();
+		trk_nfy = new Filter() {
 			@Override
-			public void init() {
+			public int open(TrackHandle t) {
+				return new_track(t);
 			}
 
 			@Override
-			public int open(String name, int time_total) {
-				return new_track(name, time_total);
+			public void close(TrackHandle t) {
+				close_track(t);
 			}
 
 			@Override
-			public void close(boolean stopped) {
-				close_track(stopped);
+			public int process(TrackHandle t) {
+				return update_track(t);
 			}
-
-			@Override
-			public int process(int playtime) {
-				return update_track(playtime);
-			}
-		});
+		};
+		track.filter_add(trk_nfy);
+		trackctl = new TrackCtl(core, this);
+		trackctl.connect();
+		trec = track.trec;
 		return 0;
 	}
 
@@ -256,6 +289,17 @@ public class MainActivity extends AppCompatActivity {
 	 * Set UI objects and register event handlers
 	 */
 	void init_ui() {
+		brec = findViewById(R.id.brec);
+		brec.setOnClickListener(new View.OnClickListener() {
+			public void onClick(View v) {
+				cmd(Cmd.Rec);
+			}
+		});
+		if (!gui.record_show)
+			brec.setVisibility(View.INVISIBLE);
+		if (trec != null)
+			brec.setImageResource(R.drawable.ic_stop);
+
 		bplay = findViewById(R.id.bplay);
 		bplay.setOnClickListener(new View.OnClickListener() {
 			public void onClick(View v) {
@@ -341,6 +385,7 @@ public class MainActivity extends AppCompatActivity {
 				return list_longclick(position);
 			}
 		});
+
 		gui.cur_activity = this;
 	}
 
@@ -350,25 +395,45 @@ public class MainActivity extends AppCompatActivity {
 	void cmd(Cmd c) {
 		core.dbglog(TAG, "cmd: %s", c.name());
 		switch (c) {
+			case Rec:
+				if (trec == null) {
+					Date d = new Date();
+					Calendar cal = new GregorianCalendar();
+					cal.setTime(d);
+					trec = track.record(String.format("%s/rec%04d%02d%02d_%02d%02d%02d.m4a"
+							, gui.rec_path
+							, cal.get(Calendar.YEAR), cal.get(Calendar.MONTH) + 1, cal.get(Calendar.DAY_OF_MONTH)
+							, cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE), cal.get(Calendar.SECOND)));
+					if (trec == null)
+						break;
+					brec.setImageResource(R.drawable.ic_stop);
+				} else {
+					track.record_stop(trec);
+					trec = null;
+					brec.setImageResource(R.drawable.ic_rec);
+				}
+				break;
+
 			case PlayPause:
 				if (track.state() == Track.State.PLAYING) {
-					track.pause();
+					trackctl.pause();
 					state(2);
 				} else {
-					track.unpause();
+					trackctl.unpause();
 					state(1);
 				}
 				break;
 
 			case Next:
-				track.next();
+				trackctl.next();
 				break;
 
 			case Prev:
-				track.prev();
+				trackctl.prev();
 				break;
 
 			case Explorer:
+				gui.list_pos = list.getFirstVisiblePosition();
 				cur_view = -1;
 				list_show(gui.cur_path);
 				bexplorer.setChecked(true);
@@ -383,6 +448,7 @@ public class MainActivity extends AppCompatActivity {
 				if (gui.filter_show)
 					tfilter.setVisibility(View.VISIBLE);
 				plist_show2();
+				list.setSelection(gui.list_pos);
 				break;
 		}
 	}
@@ -392,6 +458,7 @@ public class MainActivity extends AppCompatActivity {
 		if (core.file_rename(fn, fn + ".deleted"))
 			gui.msg_show(this, "Renamed 1 file");
 		plist_show2();
+		list.setSelection(gui.list_pos);
 	}
 
 	/**
@@ -496,7 +563,7 @@ public class MainActivity extends AppCompatActivity {
 		int i = 0;
 		for (String s : fns) {
 			if (s.equalsIgnoreCase(fn)) {
-				list.smoothScrollToPosition(i);
+				list.setSelection(i);
 				break;
 			}
 			i++;
@@ -665,7 +732,7 @@ public class MainActivity extends AppCompatActivity {
 	 * UI event from seek bar
 	 */
 	void seek(int pos) {
-		track.seek(pos);
+		trackctl.seek(pos);
 	}
 
 	void state(int st) {
@@ -690,14 +757,12 @@ public class MainActivity extends AppCompatActivity {
 	/**
 	 * Called by Track when a new track is initialized
 	 */
-	int new_track(String name, int time_total) {
-		lbl_name.setText(name);
+	int new_track(TrackHandle t) {
+		lbl_name.setText(t.name);
 		progs.setProgress(0);
-		if (time_total < 0) {
-			this.time_total = -time_total;
+		if (t.state == Track.State.PAUSED) {
 			state(2);
 		} else {
-			this.time_total = time_total;
 			state(1);
 		}
 		return 0;
@@ -706,25 +771,22 @@ public class MainActivity extends AppCompatActivity {
 	/**
 	 * Called by Track after a track is finished
 	 */
-	void close_track(boolean stopped) {
+	void close_track(TrackHandle t) {
 		lbl_name.setText("");
 		lbl_pos.setText("");
-		if (stopped) {
-			progs.setProgress(0);
-			state(0);
-		}
+		progs.setProgress(0);
+		state(0);
 	}
 
 	/**
 	 * Called by Track during playback
 	 */
-	int update_track(int playtime) {
-		if (playtime < 0) {
-			playtime = -playtime;
+	int update_track(TrackHandle t) {
+		if (t.state == Track.State.PAUSED) {
 			state(2);
 		}
-		int pos = playtime / 1000;
-		int dur = time_total / 1000;
+		int pos = t.pos / 1000;
+		int dur = t.time_total / 1000;
 		int progress = 0;
 		if (dur != 0)
 			progress = pos * 100 / dur;
